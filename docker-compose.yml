@@ -1,0 +1,113 @@
+# docker-compose.yml — AI SEO & Social Media Manager (Phase 1)
+#
+# Services:
+#   - backend:  FastAPI (uvicorn), hot-reload, depends on db + chroma
+#   - frontend: Vite dev server (port 5173) — dev mode for fast iteration
+#   - db:       PostgreSQL 16 (parity with production)
+#   - chroma:   Chroma vector DB (RAG memory)
+#
+# Cost classification: 100% FREE + OPEN SOURCE. No paid services.
+# Internet: only required to PULL images on first run; afterward fully local.
+#
+# ---------------------------------------------------------------------------
+# FAST ITERATION: run with SQLite locally, no Docker needed
+# ---------------------------------------------------------------------------
+# The SQLAlchemy engine reads DATABASE_URL from .env. SQLite is the same
+# dialect family as Postgres through SQLAlchemy, so the app runs unmodified.
+# This is the fastest path for development and unit tests.
+#
+#   cd backend
+#   python -m venv .venv && source .venv/bin/activate   # or .venv\Scripts\activate on Windows
+#   pip install -r requirements.txt
+#   cp ../.env.example ../.env
+#   # edit .env → set DATABASE_URL=sqlite:///./aism.db
+#   alembic upgrade head
+#   uvicorn app.main:app --reload
+#
+# Then open http://localhost:8000/docs and http://localhost:5173 (run
+# `npm run dev` in ../frontend).
+#
+# When you are ready for production parity, switch DATABASE_URL back to the
+# Postgres URL and run `docker compose up -d` instead.
+# ---------------------------------------------------------------------------
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: aism_db
+    environment:
+      POSTGRES_USER: aism
+      POSTGRES_PASSWORD: aism_dev_pw
+      POSTGRES_DB: aism
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aism -d aism"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  chroma:
+    image: chromadb/chroma:0.5.5
+    container_name: aism_chroma
+    environment:
+      - IS_PERSISTED=TRUE
+      - ANONYMIZED_TELEMETRY=False
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aism_backend
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://aism:aism_dev_pw@db:5432/aism}
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      STORAGE_ROOT: /app/storage
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - backend_storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aism_frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    environment:
+      - VITE_API_BASE=http://localhost:8000
+    depends_on:
+      - backend
+
+volumes:
+  db_data:
+  chroma_data:
+  backend_storage:
+  frontend_node_modules:

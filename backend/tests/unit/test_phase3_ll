@@ -1,0 +1,261 @@
+# backend/tests/unit/test_phase3_llm_rag.py
+# Phase 3: Local LLM + RAG tests
+# Cost classification: FREE + OPEN SOURCE
+
+import pytest
+from unittest.mock import Mock, patch
+from pydantic import BaseModel
+
+from app.services.llm.ollama_provider import OllamaProvider
+from app.services.rag import RAGService, RAGContext
+
+
+class TestStructuredSchema(BaseModel):
+    """Test schema for structured output"""
+    title: str
+    description: str
+    tags: list[str]
+
+
+class TestOllamaProvider:
+    """Test Ollama LLM provider"""
+    
+    def test_provider_initialization(self):
+        """Test provider initializes with correct defaults"""
+        provider = OllamaProvider()
+        assert provider.base_url == "http://localhost:11434"
+        assert provider.model == "qwen2.5:3b-instruct-q4_K_M"
+        assert provider.timeout == 120.0
+    
+    def test_custom_configuration(self):
+        """Test provider accepts custom configuration"""
+        provider = OllamaProvider(
+            base_url="http://custom:8080",
+            model="custom-model",
+            timeout=60.0
+        )
+        assert provider.base_url == "http://custom:8080"
+        assert provider.model == "custom-model"
+        assert provider.timeout == 60.0
+    
+    @patch('httpx.Client.post')
+    def test_generate(self, mock_post):
+        """Test text generation"""
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "message": {"content": "Generated text"}
+        }
+        mock_response.raise_for_status = Mock()
+        mock_post.return_value = mock_response
+        
+        provider = OllamaProvider()
+        result = provider.generate("Test prompt", system="System message")
+        
+        assert result == "Generated text"
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert call_args[0][0] == "http://localhost:11434/api/chat"
+        payload = call_args[1]["json"]
+        assert payload["model"] == "qwen2.5:3b-instruct-q4_K_M"
+        assert len(payload["messages"]) == 2
+        assert payload["messages"][0]["role"] == "system"
+        assert payload["messages"][1]["role"] == "user"
+    
+    @patch('httpx.Client.post')
+    def test_structured_output(self, mock_post):
+        """Test structured output generation"""
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "message": {
+                "content": '{"title": "Test", "description": "Description", "tags": ["tag1", "tag2"]}'
+            }
+        }
+        mock_response.raise_for_status = Mock()
+        mock_post.return_value = mock_response
+        
+        provider = OllamaProvider()
+        result = provider.structured_output(
+            "Generate test data",
+            schema=TestStructuredSchema
+        )
+        
+        assert isinstance(result, TestStructuredSchema)
+        assert result.title == "Test"
+        assert result.description == "Description"
+        assert result.tags == ["tag1", "tag2"]
+    
+    @patch('httpx.Client.get')
+    def test_health_check(self, mock_get):
+        """Test health check"""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_get.return_value = mock_response
+        
+        provider = OllamaProvider()
+        assert provider.health_check() is True
+    
+    @patch('httpx.Client.get')
+    def test_health_check_failure(self, mock_get):
+        """Test health check when service is down"""
+        mock_get.side_effect = Exception("Connection failed")
+        
+        provider = OllamaProvider()
+        assert provider.health_check() is False
+    
+    @patch('httpx.Client.get')
+    def test_list_models(self, mock_get):
+        """Test listing available models"""
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "models": [
+                {"name": "qwen2.5:3b-instruct-q4_K_M"},
+                {"name": "llama2:7b"}
+            ]
+        }
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+        
+        provider = OllamaProvider()
+        models = provider.list_models()
+        
+        assert len(models) == 2
+        assert "qwen2.5:3b-instruct-q4_K_M" in models
+        assert "llama2:7b" in models
+
+
+class TestRAGService:
+    """Test RAG service functionality"""
+    
+    def test_rag_service_initialization(self):
+        """Test RAG service initializes with dependencies"""
+        mock_llm = Mock()
+        mock_embeddings = Mock()
+        mock_vector_store = Mock()
+        
+        rag = RAGService(mock_llm, mock_embeddings, mock_vector_store)
+        
+        assert rag.llm == mock_llm
+        assert rag.embeddings == mock_embeddings
+        assert rag.vector_store == mock_vector_store
+    
+    def test_retrieve_contexts(self):
+        """Test context retrieval from vector store"""
+        mock_llm = Mock()
+        mock_embeddings = Mock()
+        mock_embeddings.embed_single.return_value = [0.1, 0.2, 0.3]
+        
+        mock_vector_store = Mock()
+        mock_vector_store.search.return_value = [
+            {
+                "content": "Test content 1",
+                "metadata": {"type": "video"},
+                "score": 0.95
+            },
+            {
+                "content": "Test content 2",
+                "metadata": {"type": "image"},
+                "score": 0.87
+            }
+        ]
+        
+        rag = RAGService(mock_llm, mock_embeddings, mock_vector_store)
+        contexts = rag.retrieve("test query", top_k=2)
+        
+        assert len(contexts) == 2
+        assert contexts[0].content == "Test content 1"
+        assert contexts[0].score == 0.95
+        assert contexts[1].content == "Test content 2"
+        assert contexts[1].score == 0.87
+    
+    def test_generate_with_context(self):
+        """Test generation with retrieved context"""
+        mock_llm = Mock()
+        mock_llm.generate.return_value = "Generated response"
+        
+        mock_embeddings = Mock()
+        mock_embeddings.embed_single.return_value = [0.1, 0.2, 0.3]
+        
+        mock_vector_store = Mock()
+        mock_vector_store.search.return_value = [
+            {
+                "content": "Relevant context",
+                "metadata": {},
+                "score": 0.9
+            }
+        ]
+        
+        rag = RAGService(mock_llm, mock_embeddings, mock_vector_store)
+        response = rag.generate_with_context("test query")
+        
+        assert response == "Generated response"
+        mock_llm.generate.assert_called_once()
+        # Check that context was included in prompt
+        call_args = mock_llm.generate.call_args[0][0]
+        assert "Relevant context" in call_args
+    
+    def test_generate_ideas_from_content(self):
+        """Test content idea generation"""
+        mock_llm = Mock()
+        mock_llm.generate.return_value = """1. Idea one: Description here
+2. Idea two: Another description
+3. Idea three: More details"""
+        
+        mock_embeddings = Mock()
+        mock_embeddings.embed_single.return_value = [0.1, 0.2, 0.3]
+        
+        mock_vector_store = Mock()
+        mock_vector_store.search.return_value = []
+        
+        rag = RAGService(mock_llm, mock_embeddings, mock_vector_store)
+        ideas = rag.generate_ideas_from_content("social media tips", num_ideas=3)
+        
+        assert len(ideas) == 3
+        assert "Idea one" in ideas[0]
+        assert "Idea two" in ideas[1]
+        assert "Idea three" in ideas[2]
+    
+    def test_generate_caption(self):
+        """Test caption generation"""
+        mock_llm = Mock()
+        mock_llm.generate.return_value = "Great caption with #hashtags"
+        
+        mock_embeddings = Mock()
+        mock_embeddings.embed_single.return_value = [0.1, 0.2, 0.3]
+        
+        mock_vector_store = Mock()
+        mock_vector_store.search.return_value = []
+        
+        rag = RAGService(mock_llm, mock_embeddings, mock_vector_store)
+        caption = rag.generate_caption(
+            content_description="Video about coding",
+            style="engaging",
+            include_hashtags=True
+        )
+        
+        assert caption == "Great caption with #hashtags"
+        mock_llm.generate.assert_called_once()
+
+
+@pytest.mark.skipif(
+    True,  # Always skip unless Ollama is explicitly running
+    reason="Requires Ollama server running on localhost:11434"
+)
+class TestOllamaIntegration:
+    """Integration tests - require Ollama server running"""
+    
+    def test_actual_ollama_connection(self):
+        """Test real connection to Ollama (skipped by default)"""
+        provider = OllamaProvider()
+        assert provider.health_check() is True
+        
+        models = provider.list_models()
+        assert len(models) > 0
+    
+    def test_actual_generation(self):
+        """Test real text generation (skipped by default)"""
+        provider = OllamaProvider()
+        response = provider.generate(
+            "Say hello in one word",
+            temperature=0.1
+        )
+        assert len(response) > 0

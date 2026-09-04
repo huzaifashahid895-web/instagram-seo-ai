@@ -1,0 +1,36 @@
+# Core backend dependencies
+fastapi
+uvicorn[standard]
+sqlalchemy
+alembic
+pydantic-settings
+python-dotenv
+psycopg[binary]
+python-json-logger
+python-multipart
+httpx>=0.24.0
+python-jose[cryptography]
+passlib[bcrypt]
+aiofiles
+
+# Phase 7: Scheduling
+apscheduler>=3.10.0
+
+# Phase 2: Content library & AI analysis dependencies
+# Cost classification: All FREE + OPEN SOURCE
+
+# Speech-to-text (faster-whisper with CTranslate2)
+faster-whisper>=1.0.0
+
+# Embeddings (sentence-transformers with BGE models)
+sentence-transformers>=2.2.0
+
+# Vision (OpenCLIP for image embeddings & zero-shot classification)
+open_clip_torch>=2.20.0
+pillow>=10.0.0
+
+# Vector database (Chroma for RAG)
+chromadb>=0.4.0
+
+# Image processing
+opencv-python-headless>=4.8.0
